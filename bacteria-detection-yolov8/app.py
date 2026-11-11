@@ -1,0 +1,501 @@
+
+import streamlit as st
+from ultralytics import YOLO
+from PIL import Image
+import os
+import io
+import pandas as pd
+import altair as alt
+from datetime import datetime
+
+
+# ============================================================
+# CONFIGURATION DE LA PAGE
+# ============================================================
+st.set_page_config(
+    page_title="BactériAI — Console de Détection",
+    page_icon="🧫",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ============================================================
+# IDENTITÉ VISUELLE — DASHBOARD SOMBRE / TECHNIQUE
+# ============================================================
+BG          = "#0B0F14"   # fond principal quasi noir
+PANEL       = "#11161D"   # fond des cartes
+PANEL_ALT   = "#0E1319"   # fond légèrement différencié (sidebar, header)
+BORDER      = "#222B35"
+TEXT        = "#E6EDF3"
+MUTED       = "#7E8A99"
+ACCENT      = "#00E5A0"   # vert phosphorescent type oscilloscope/monitoring
+ACCENT_DIM  = "rgba(0,229,160,0.12)"
+WARN        = "#FFB454"
+DANGER      = "#FF5C5C"
+
+CLASS_COLORS = {
+    "Bacillus":  "#00E5A0",
+    "Coccus":    "#3DA9FC",
+    "Spirillum": "#F2C14E",
+    "Vibrio":    "#FF6F91",
+}
+
+st.markdown(f"""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {{
+        font-family: 'IBM Plex Sans', sans-serif;
+        color: {TEXT};
+    }}
+
+    .stApp {{
+        background-color: {BG};
+    }}
+
+    h1, h2, h3, h4 {{
+        font-family: 'JetBrains Mono', monospace !important;
+        color: {TEXT};
+        letter-spacing: -0.01em;
+    }}
+
+    /* ---- En-tête console ---- */
+    .console-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1.1rem 1.6rem;
+        background: {PANEL_ALT};
+        border: 1px solid {BORDER};
+        border-left: 4px solid {ACCENT};
+        border-radius: 8px;
+        margin-bottom: 1.3rem;
+    }}
+    .console-header .title-block h1 {{
+        font-size: 1.35rem;
+        margin: 0;
+        color: {TEXT};
+    }}
+    .console-header .title-block p {{
+        color: {MUTED};
+        margin: 0.25rem 0 0 0;
+        font-size: 0.85rem;
+        font-family: 'JetBrains Mono', monospace;
+    }}
+    .status-dot {{
+        display:inline-block; width:8px; height:8px; border-radius:50%;
+        background:{ACCENT}; margin-right:6px;
+        box-shadow: 0 0 8px {ACCENT};
+    }}
+    .console-badge {{
+        background: {ACCENT_DIM};
+        border: 1px solid {ACCENT};
+        color: {ACCENT};
+        padding: 0.4rem 0.85rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 600;
+        white-space: nowrap;
+        letter-spacing: 0.03em;
+    }}
+
+    /* ---- Panneaux ---- */
+    .panel {{
+        background: {PANEL};
+        border: 1px solid {BORDER};
+        border-radius: 8px;
+        padding: 1rem 1.1rem;
+        height: 100%;
+    }}
+    .panel-title {{
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 600;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: {MUTED};
+        margin-bottom: 0.7rem;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        border-bottom: 1px solid {BORDER};
+        padding-bottom: 0.5rem;
+    }}
+
+    /* ---- Lignes de détection (remplace les "count-card") ---- */
+    .detect-row {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: {PANEL_ALT};
+        border: 1px solid {BORDER};
+        border-left: 3px solid var(--accent);
+        border-radius: 6px;
+        padding: 0.55rem 0.85rem;
+        margin-bottom: 0.45rem;
+    }}
+    .detect-row .left {{
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+    }}
+    .detect-row .dot {{
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--accent);
+    }}
+    .detect-row .name {{
+        font-weight: 600;
+        font-size: 0.9rem;
+        color: {TEXT};
+    }}
+    .detect-row .sub {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+        color: {MUTED};
+    }}
+    .detect-row .value {{
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700;
+        font-size: 1.05rem;
+        color: var(--accent);
+    }}
+
+    /* ---- KPI ---- */
+    .kpi-row {{ display:flex; gap:0.7rem; margin-bottom: 1.1rem; }}
+    .kpi {{
+        flex:1;
+        background:{PANEL};
+        border:1px solid {BORDER};
+        border-radius:8px;
+        padding:0.8rem 0.95rem;
+        text-align:left;
+        position: relative;
+        overflow: hidden;
+    }}
+    .kpi::before {{
+        content:"";
+        position:absolute; left:0; top:0; bottom:0; width:3px;
+        background: {ACCENT};
+        opacity:0.7;
+    }}
+    .kpi .kpi-label {{
+        font-family:'JetBrains Mono', monospace;
+        font-size:0.68rem;
+        text-transform:uppercase;
+        letter-spacing:0.07em;
+        color:{MUTED};
+        font-weight:600;
+    }}
+    .kpi .kpi-value {{
+        font-family:'JetBrains Mono', monospace;
+        font-size:1.55rem;
+        font-weight:700;
+        color:{TEXT};
+        margin-top:0.15rem;
+    }}
+
+    /* ---- Pied de rapport ---- */
+    .report-footer {{
+        margin-top: 1.4rem;
+        padding: 0.7rem 0.9rem;
+        background: {PANEL_ALT};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+        color: {MUTED};
+        display:flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+    }}
+    .report-footer b {{ color: {TEXT}; }}
+
+    /* ---- Sidebar ---- */
+    section[data-testid="stSidebar"] {{
+        background-color: {PANEL_ALT};
+        border-right: 1px solid {BORDER};
+    }}
+    section[data-testid="stSidebar"] * {{
+        color: {TEXT};
+    }}
+
+    div[data-testid="stFileUploaderDropzone"] {{
+        border-radius: 8px;
+        border: 1.5px dashed {ACCENT};
+        background: {ACCENT_DIM};
+    }}
+
+    .stButton button {{
+        background: {ACCENT};
+        color: #06140F;
+        border-radius: 6px;
+        border: none;
+        font-weight: 700;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.85rem;
+    }}
+    .stButton button:hover {{
+        background: #00C98C;
+        color: #06140F;
+    }}
+
+    /* Slider */
+    div[data-testid="stSlider"] [data-baseweb="slider"] > div > div {{
+        background: {ACCENT} !important;
+    }}
+
+    /* Texte d'avertissement */
+    .stAlert {{
+        background-color: {PANEL} !important;
+        border: 1px solid {BORDER} !important;
+    }}
+
+    .empty-state {{
+        text-align:center;
+        padding: 2.6rem 1.5rem;
+        border: 1px dashed {BORDER};
+        border-radius: 8px;
+        background: {PANEL};
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# EN-TÊTE
+# ============================================================
+st.markdown(f"""
+<div class="console-header">
+    <div class="title-block">
+        <h1><span class="status-dot"></span>BACTÉRIAI — CONSOLE DE DÉTECTION</h1>
+        <p>Détection &amp; identification automatique de bactéries · Computer Vision (YOLOv8)</p>
+    </div>
+    <div class="console-badge">MODEL: YOLOv8-L · STATUS: ONLINE</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# CHARGEMENT DU MODÈLE
+# ============================================================
+@st.cache_resource
+def load_model():
+    # Chemin local par défaut ; variable d'environnement MODEL_PATH pour le changer (ex. sur Colab)
+    model_path = os.environ.get("MODEL_PATH", "weights/best.pt")
+    if os.path.exists(model_path):
+        return YOLO(model_path)
+    else:
+        st.error(f"Le fichier de modèle « {model_path} » est introuvable. Placez vos poids entraînés à cet emplacement.")
+        return None
+
+model = load_model()
+
+# Noms réels des classes (issus du jeu d'entraînement — voir data.yaml / matrice de confusion)
+class_names = {
+    0: "Bacillus",
+    1: "Coccus",
+    2: "Spirillum",
+    3: "Vibrio",
+}
+
+# Petite fiche d'identité par genre bactérien (purement informatif)
+class_info = {
+    "Bacillus":  "Bacille — forme de bâtonnet allongé",
+    "Coccus":    "Coque — forme sphérique/ovale",
+    "Spirillum": "Spirille — forme spiralée rigide",
+    "Vibrio":    "Vibrion — forme incurvée en virgule",
+}
+
+# ============================================================
+# BARRE LATÉRALE — PARAMÈTRES D'ANALYSE
+# ============================================================
+with st.sidebar:
+    st.markdown("### ⚙ PARAMÈTRES")
+    confidence = st.slider(
+        "Seuil de confiance minimal",
+        min_value=0.05, max_value=0.95, value=0.25, step=0.05,
+        help="Seules les détections dont le score dépasse ce seuil sont conservées."
+    )
+    st.markdown("---")
+    st.markdown("### 🧬 CLASSES DÉTECTABLES")
+    for name in class_names.values():
+        color = CLASS_COLORS.get(name, ACCENT)
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:0.55rem;margin-bottom:0.5rem;'>"
+            f"<div style='width:10px;height:10px;border-radius:50%;background:{color};box-shadow:0 0 6px {color};'></div>"
+            f"<div><span style='font-size:0.85rem;font-weight:600;'>{name}</span><br>"
+            f"<span style='font-size:0.7rem;color:{MUTED};'>{class_info.get(name,'')}</span></div></div>",
+            unsafe_allow_html=True
+        )
+    st.markdown("---")
+    st.caption("BactériAI v1.1 — Outil d'aide à l'analyse microscopique. Ne remplace pas un diagnostic clinique validé par un professionnel.")
+
+# ============================================================
+# ZONE D'IMPORT
+# ============================================================
+st.markdown('<div class="panel-title">📤 IMPORT DE L\'IMAGE</div>', unsafe_allow_html=True)
+uploaded_file = st.file_uploader(
+    "Déposez une image microscopique (JPG, JPEG, PNG)",
+    type=["jpg", "jpeg", "png"],
+    label_visibility="collapsed"
+)
+
+st.write("")
+
+# ============================================================
+# RÉSULTATS
+# ============================================================
+if uploaded_file is not None:
+    image = Image.open(uploaded_file).convert("RGB")
+
+    col1, col2 = st.columns(2, gap="medium")
+
+    with col1:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">🖼 IMAGE SOURCE</div>', unsafe_allow_html=True)
+        st.image(image, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-title">🔍 DÉTECTION ANNOTÉE</div>', unsafe_allow_html=True)
+
+        if model is not None:
+            with st.spinner("Analyse en cours…"):
+                results = model(image, conf=confidence)
+                annotated_img_array = results[0].plot()
+                annotated_image = Image.fromarray(annotated_img_array[..., ::-1])
+                st.image(annotated_image, use_container_width=True)
+        else:
+            st.warning("En attente du modèle pour lancer la détection.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # --------------------------------------------------------
+    # SYNTHÈSE DES RÉSULTATS
+    # --------------------------------------------------------
+    if model is not None:
+        boxes = results[0].boxes
+        total_detections = len(boxes)
+
+        st.write("")
+        st.markdown("## 📊 RAPPORT D'ANALYSE")
+
+        if total_detections == 0:
+            st.warning("Aucune bactérie détectée avec ce seuil de confiance. Essayez de le réduire dans la barre latérale.")
+        else:
+            counts = {}
+            conf_by_class = {}
+            for box in boxes:
+                cls_id = int(box.cls[0].item())
+                conf_score = float(box.conf[0].item())
+                name = class_names.get(cls_id, f"Classe {cls_id}")
+                counts[name] = counts.get(name, 0) + 1
+                conf_by_class.setdefault(name, []).append(conf_score)
+
+            all_confs = [c for v in conf_by_class.values() for c in v]
+            avg_conf = sum(all_confs) / len(all_confs) * 100
+            n_classes = len(counts)
+            dominant_label = max(counts, key=counts.get)
+
+            # ---- KPI ----
+            st.markdown(f"""
+            <div class="kpi-row">
+                <div class="kpi">
+                    <div class="kpi-label">Détections totales</div>
+                    <div class="kpi-value">{total_detections}</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Espèces identifiées</div>
+                    <div class="kpi-value">{n_classes}</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Confiance moyenne</div>
+                    <div class="kpi-value">{avg_conf:.1f}%</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Espèce dominante</div>
+                    <div class="kpi-value" style="font-size:1.1rem;">{dominant_label}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            col3, col4 = st.columns([1, 1.3], gap="medium")
+
+            with col3:
+                st.markdown('<div class="panel">', unsafe_allow_html=True)
+                st.markdown('<div class="panel-title">🧫 BACTÉRIES IDENTIFIÉES</div>', unsafe_allow_html=True)
+                for label, count in sorted(counts.items(), key=lambda x: -x[1]):
+                    color = CLASS_COLORS.get(label, ACCENT)
+                    avg_c = sum(conf_by_class[label]) / len(conf_by_class[label]) * 100
+                    st.markdown(f"""
+                    <div class="detect-row" style="--accent:{color};">
+                        <div class="left">
+                            <div class="dot"></div>
+                            <div>
+                                <div class="name">{label}</div>
+                                <div class="sub">confiance moy. {avg_c:.0f}%</div>
+                            </div>
+                        </div>
+                        <span class="value">{count}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with col4:
+                st.markdown('<div class="panel">', unsafe_allow_html=True)
+                st.markdown('<div class="panel-title">📈 RÉPARTITION</div>', unsafe_allow_html=True)
+
+                df = pd.DataFrame({
+                    "Espèce": list(counts.keys()),
+                    "Effectif": list(counts.values())
+                })
+                color_scale = alt.Scale(
+                    domain=list(CLASS_COLORS.keys()),
+                    range=list(CLASS_COLORS.values())
+                )
+                chart = (
+                    alt.Chart(df)
+                    .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, size=32)
+                    .encode(
+                        x=alt.X("Espèce:N", title=None, sort="-y", axis=alt.Axis(labelAngle=0, labelColor=MUTED, domainColor=BORDER, tickColor=BORDER)),
+                        y=alt.Y("Effectif:Q", title="Détections", axis=alt.Axis(labelColor=MUTED, titleColor=MUTED, domainColor=BORDER, tickColor=BORDER, gridColor=BORDER)),
+                        color=alt.Color("Espèce:N", scale=color_scale, legend=None),
+                        tooltip=["Espèce", "Effectif"]
+                    )
+                    .properties(height=260, background=PANEL)
+                    .configure_view(strokeWidth=0)
+                )
+                st.altair_chart(chart, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            # --------------------------------------------------------
+            # TÉLÉCHARGEMENT DU RAPPORT
+            # --------------------------------------------------------
+            st.write("")
+            buf = io.BytesIO()
+            annotated_image.save(buf, format="PNG")
+            st.download_button(
+                "⬇ TÉLÉCHARGER L'IMAGE ANNOTÉE",
+                data=buf.getvalue(),
+                file_name=f"detection_{uploaded_file.name}",
+                mime="image/png"
+            )
+
+            st.markdown(f"""
+            <div class="report-footer">
+                <span>FICHIER: <b>{uploaded_file.name}</b></span>
+                <span>SEUIL: <b>{confidence:.2f}</b></span>
+                <span>GÉNÉRÉ LE: <b>{datetime.now().strftime('%d/%m/%Y %H:%M')}</b></span>
+            </div>
+            """, unsafe_allow_html=True)
+
+else:
+    st.markdown(f"""
+    <div class="empty-state">
+        <div style="font-size:2.2rem;">🧪</div>
+        <p style="color:{MUTED}; margin-top:0.6rem; font-family:'JetBrains Mono', monospace; font-size:0.85rem;">
+            EN ATTENTE D'UNE IMAGE — importez un cliché microscopique pour lancer l'analyse.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
